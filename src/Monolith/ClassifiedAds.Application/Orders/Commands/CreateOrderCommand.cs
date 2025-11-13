@@ -78,8 +78,9 @@ internal class CreateOrderCommandHandler : IRequestHandler<CreateOrderCommand>
     private string GenerateOrderNumber()
     {
         // Generate a unique order number with timestamp and random component
+        // Using Random.Shared for thread-safe random number generation (.NET 6+)
         var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss");
-        var random = new Random().Next(1000, 9999);
+        var random = Random.Shared.Next(1000, 9999);
         return $"ORD-{timestamp}-{random}";
     }
 }

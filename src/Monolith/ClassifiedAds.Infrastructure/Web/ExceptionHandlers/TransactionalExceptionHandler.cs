@@ -114,7 +114,7 @@ public class TransactionalExceptionHandler : IExceptionHandler
 
     private bool IsUniqueConstraintViolation(DbUpdateException exception)
     {
-        // Provider-agnostic detection of unique constraint violations
+        // Language-independent detection of unique constraint violations using error codes
         var innerException = exception.InnerException;
 
         if (innerException == null)
@@ -122,23 +122,56 @@ public class TransactionalExceptionHandler : IExceptionHandler
             return false;
         }
 
-        var message = innerException.Message?.ToLowerInvariant() ?? string.Empty;
-
-        // SQL Server specific checks
+        // SQL Server: Use error numbers (language-independent)
         if (innerException is SqlException sqlException)
         {
-            // SQL Server error codes for unique constraint violations:
-            // 2601 - Cannot insert duplicate key row
-            // 2627 - Violation of unique constraint
+            // 2601 - Cannot insert duplicate key row in object with unique index
+            // 2627 - Violation of UNIQUE KEY constraint
             return sqlException.Number == 2601 || sqlException.Number == 2627;
         }
 
-        // Generic checks for other providers (PostgreSQL, MySQL, SQLite)
-        return message.Contains("unique") ||
-               message.Contains("duplicate") ||
-               message.Contains("constraint") ||
-               message.Contains("violation") ||
-               (message.Contains("index") && (message.Contains("duplicate") || message.Contains("unique")));
+        // PostgreSQL: Check for error code 23505 (unique_violation)
+        var postgresType = innerException.GetType().FullName;
+        if (postgresType?.Contains("Npgsql.PostgresException") == true)
+        {
+            // Use reflection to get SqlState property (error code 23505)
+            var sqlStateProperty = innerException.GetType().GetProperty("SqlState");
+            var sqlState = sqlStateProperty?.GetValue(innerException) as string;
+            return sqlState == "23505"; // unique_violation
+        }
+
+        // MySQL: Check for error numbers 1062 (duplicate entry) or 1586 (duplicate key)
+        var mysqlType = innerException.GetType().FullName;
+        if (mysqlType?.Contains("MySql.Data.MySqlClient.MySqlException") == true ||
+            mysqlType?.Contains("MySqlConnector.MySqlException") == true)
+        {
+            var numberProperty = innerException.GetType().GetProperty("Number");
+            var errorNumber = numberProperty?.GetValue(innerException);
+            return errorNumber is 1062 or 1586;
+        }
+
+        // SQLite: Check for SQLITE_CONSTRAINT (19) with UNIQUE constraint type
+        var sqliteType = innerException.GetType().FullName;
+        if (sqliteType?.Contains("Microsoft.Data.Sqlite.SqliteException") == true)
+        {
+            var sqliteErrorCodeProperty = innerException.GetType().GetProperty("SqliteErrorCode");
+            var errorCode = sqliteErrorCodeProperty?.GetValue(innerException);
+            // SQLITE_CONSTRAINT = 19, check message contains "UNIQUE" for constraint type
+            if (errorCode is 19)
+            {
+                var message = innerException.Message ?? string.Empty;
+                return message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        // Fallback: Could not determine database provider or error type
+        // Log warning and return false to avoid false positives
+        _logger.LogWarning(
+            "Could not determine if DbUpdateException is a unique constraint violation. " +
+            "Exception type: {ExceptionType}, Message: {Message}",
+            innerException.GetType().FullName,
+            innerException.Message);
+        return false;
     }
 
     private async Task WriteProblemDetailsAsync(
