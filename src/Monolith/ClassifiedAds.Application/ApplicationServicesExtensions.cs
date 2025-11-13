@@ -1,4 +1,5 @@
 ﻿using ClassifiedAds.Application;
+using ClassifiedAds.Application.Common.Testing;
 using ClassifiedAds.Application.Products.Services;
 using ClassifiedAds.Application.Users.Services;
 using ClassifiedAds.Domain.Entities;
@@ -12,6 +13,9 @@ public static class ApplicationServicesExtensions
 {
     public static IServiceCollection AddApplicationServices(this IServiceCollection services, Action<Type, Type, ServiceLifetime> configureInterceptor = null)
     {
+        // Register failure injector (no-op in production)
+        services.AddSingleton<IFailureInjector, NoOpFailureInjector>();
+
         services.AddScoped(typeof(ICrudService<>), typeof(CrudService<>))
             .AddScoped<IUserService, UserService>()
             .AddScoped<IProductService, ProductService>();

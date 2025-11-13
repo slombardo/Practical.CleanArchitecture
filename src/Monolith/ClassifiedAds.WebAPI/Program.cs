@@ -53,6 +53,7 @@ services.Configure<AppSettings>(configuration);
 
 services.AddMonitoringServices(appSettings.Monitoring);
 
+services.AddExceptionHandler<TransactionalExceptionHandler>();
 services.AddExceptionHandler<GlobalExceptionHandler>();
 
 services.AddControllers(configure =>
