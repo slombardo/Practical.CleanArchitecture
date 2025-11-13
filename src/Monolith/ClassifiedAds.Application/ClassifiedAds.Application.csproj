@@ -18,4 +18,9 @@
     <ProjectReference Include="..\ClassifiedAds.Domain\ClassifiedAds.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="ClassifiedAds.WebAPI.IntegrationTests" />
+    <InternalsVisibleTo Include="ClassifiedAds.UnitTests" />
+  </ItemGroup>
+
 </Project>

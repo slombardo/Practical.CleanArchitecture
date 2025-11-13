@@ -16,6 +16,10 @@ public static class ApplicationServicesExtensions
             .AddScoped<IUserService, UserService>()
             .AddScoped<IProductService, ProductService>();
 
+        // Register no-op failure injector for production use
+        // Tests can override this registration with a test double
+        services.AddSingleton<IFailureInjector, NoOpFailureInjector>();
+
         if (configureInterceptor != null)
         {
             var aggregateRootTypes = typeof(IAggregateRoot).Assembly.GetTypes().Where(x => x.IsSubclassOf(typeof(Entity<Guid>)) && x.GetInterfaces().Contains(typeof(IAggregateRoot))).ToList();
