@@ -1,7 +1,7 @@
-using ClassifiedAds.Application;
+using ClassifiedAds.Application.Common.Behaviors;
 using ClassifiedAds.Application.Common.Commands;
-using ClassifiedAds.Application.Decorators.Transactional;
 using ClassifiedAds.Domain.Repositories;
+using MediatR;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System;
@@ -10,37 +10,28 @@ using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
 
-namespace ClassifiedAds.UnitTests.Application.Decorators;
+namespace ClassifiedAds.UnitTests.Application.Behaviors;
 
 /// <summary>
-/// Unit tests for TransactionalCommandDecorator.
+/// Unit tests for TransactionalBehavior (MediatR IPipelineBehavior).
 /// Uses GWT (Given/When/Then) naming and AAA (Arrange/Act/Assert) structure.
 /// </summary>
-public class TransactionalCommandDecoratorTests
+public class TransactionalBehaviorTests
 {
-    private readonly Mock<ICommandHandler<TestCommand>> _mockHandler;
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
-    private readonly Mock<ILogger<TransactionalCommandDecorator<TestCommand>>> _mockLogger;
-    private readonly TransactionalAttribute _transactionalAttribute;
-    private readonly TransactionalCommandDecorator<TestCommand> _decorator;
+    private readonly Mock<ILogger<TransactionalBehavior<TestCommand, Unit>>> _mockLogger;
+    private readonly TransactionalBehavior<TestCommand, Unit> _behavior;
     private readonly Mock<IDisposable> _mockTransaction;
 
-    public TransactionalCommandDecoratorTests()
+    public TransactionalBehaviorTests()
     {
-        _mockHandler = new Mock<ICommandHandler<TestCommand>>();
         _mockUnitOfWork = new Mock<IUnitOfWork>();
-        _mockLogger = new Mock<ILogger<TransactionalCommandDecorator<TestCommand>>>();
-        _transactionalAttribute = new TransactionalAttribute
-        {
-            IsolationLevel = IsolationLevel.ReadCommitted
-        };
+        _mockLogger = new Mock<ILogger<TransactionalBehavior<TestCommand, Unit>>>();
         _mockTransaction = new Mock<IDisposable>();
 
-        _decorator = new TransactionalCommandDecorator<TestCommand>(
-            _mockHandler.Object,
+        _behavior = new TransactionalBehavior<TestCommand, Unit>(
             _mockUnitOfWork.Object,
-            _mockLogger.Object,
-            _transactionalAttribute);
+            _mockLogger.Object);
     }
 
     [Fact]
@@ -48,24 +39,29 @@ public class TransactionalCommandDecoratorTests
     {
         // Arrange
         var command = new TestCommand();
+        var nextCalled = false;
+
         _mockUnitOfWork
             .Setup(x => x.BeginTransactionAsync(IsolationLevel.ReadCommitted, It.IsAny<CancellationToken>()))
             .ReturnsAsync(_mockTransaction.Object);
-
-        _mockHandler
-            .Setup(x => x.HandleAsync(command, It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
 
         _mockUnitOfWork
             .Setup(x => x.CommitTransactionAsync(It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
+        RequestHandlerDelegate<Unit> next = () =>
+        {
+            nextCalled = true;
+            return Task.FromResult(Unit.Value);
+        };
+
         // Act
-        await _decorator.HandleAsync(command, CancellationToken.None);
+        var result = await _behavior.Handle(command, next, CancellationToken.None);
 
         // Assert
+        Assert.True(nextCalled);
+        Assert.Equal(Unit.Value, result);
         _mockUnitOfWork.Verify(x => x.BeginTransactionAsync(IsolationLevel.ReadCommitted, It.IsAny<CancellationToken>()), Times.Once);
-        _mockHandler.Verify(x => x.HandleAsync(command, It.IsAny<CancellationToken>()), Times.Once);
         _mockUnitOfWork.Verify(x => x.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
         _mockTransaction.Verify(x => x.Dispose(), Times.Once);
     }
@@ -81,19 +77,16 @@ public class TransactionalCommandDecoratorTests
             .Setup(x => x.BeginTransactionAsync(IsolationLevel.ReadCommitted, It.IsAny<CancellationToken>()))
             .ReturnsAsync(_mockTransaction.Object);
 
-        _mockHandler
-            .Setup(x => x.HandleAsync(command, It.IsAny<CancellationToken>()))
-            .ThrowsAsync(expectedException);
+        RequestHandlerDelegate<Unit> next = () => throw expectedException;
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            async () => await _decorator.HandleAsync(command, CancellationToken.None));
+            async () => await _behavior.Handle(command, next, CancellationToken.None));
 
         Assert.Equal(expectedException, exception);
 
         // Verify transaction was started but not committed
         _mockUnitOfWork.Verify(x => x.BeginTransactionAsync(IsolationLevel.ReadCommitted, It.IsAny<CancellationToken>()), Times.Once);
-        _mockHandler.Verify(x => x.HandleAsync(command, It.IsAny<CancellationToken>()), Times.Once);
         _mockUnitOfWork.Verify(x => x.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
 
         // Verify transaction was disposed (which triggers rollback)
@@ -101,38 +94,32 @@ public class TransactionalCommandDecoratorTests
     }
 
     [Fact]
-    public async Task Given_TransactionalCommandWithCustomIsolationLevel_When_Handled_Then_UsesCorrectIsolationLevel()
+    public async Task Given_NonTransactionalCommand_When_Handled_Then_PassesThrough_WithoutTransaction()
     {
         // Arrange
-        var command = new TestCommand();
-        var customAttribute = new TransactionalAttribute
+        var nonTransactionalCommand = new NonTransactionalCommand();
+        var nextCalled = false;
+
+        RequestHandlerDelegate<Unit> next = () =>
         {
-            IsolationLevel = IsolationLevel.Serializable
+            nextCalled = true;
+            return Task.FromResult(Unit.Value);
         };
 
-        var decorator = new TransactionalCommandDecorator<TestCommand>(
-            _mockHandler.Object,
+        var nonTransactionalBehavior = new TransactionalBehavior<NonTransactionalCommand, Unit>(
             _mockUnitOfWork.Object,
-            _mockLogger.Object,
-            customAttribute);
-
-        _mockUnitOfWork
-            .Setup(x => x.BeginTransactionAsync(IsolationLevel.Serializable, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(_mockTransaction.Object);
-
-        _mockHandler
-            .Setup(x => x.HandleAsync(command, It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
-        _mockUnitOfWork
-            .Setup(x => x.CommitTransactionAsync(It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+            Mock.Of<ILogger<TransactionalBehavior<NonTransactionalCommand, Unit>>>());
 
         // Act
-        await decorator.HandleAsync(command, CancellationToken.None);
+        var result = await nonTransactionalBehavior.Handle(nonTransactionalCommand, next, CancellationToken.None);
 
         // Assert
-        _mockUnitOfWork.Verify(x => x.BeginTransactionAsync(IsolationLevel.Serializable, It.IsAny<CancellationToken>()), Times.Once);
+        Assert.True(nextCalled);
+        Assert.Equal(Unit.Value, result);
+
+        // Verify NO transaction was started for non-transactional commands
+        _mockUnitOfWork.Verify(x => x.BeginTransactionAsync(It.IsAny<IsolationLevel>(), It.IsAny<CancellationToken>()), Times.Never);
+        _mockUnitOfWork.Verify(x => x.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -146,30 +133,32 @@ public class TransactionalCommandDecoratorTests
             .Setup(x => x.BeginTransactionAsync(IsolationLevel.ReadCommitted, It.IsAny<CancellationToken>()))
             .ReturnsAsync(_mockTransaction.Object);
 
-        _mockHandler
-            .Setup(x => x.HandleAsync(command, It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
         _mockUnitOfWork
             .Setup(x => x.CommitTransactionAsync(It.IsAny<CancellationToken>()))
             .ThrowsAsync(expectedException);
 
+        RequestHandlerDelegate<Unit> next = () => Task.FromResult(Unit.Value);
+
         // Act & Assert
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            async () => await _decorator.HandleAsync(command, CancellationToken.None));
+            async () => await _behavior.Handle(command, next, CancellationToken.None));
 
         Assert.Equal(expectedException, exception);
 
-        // Verify handler was called but commit failed
-        _mockHandler.Verify(x => x.HandleAsync(command, It.IsAny<CancellationToken>()), Times.Once);
+        // Verify next was called but commit failed
         _mockUnitOfWork.Verify(x => x.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Once);
 
         // Verify transaction was disposed
         _mockTransaction.Verify(x => x.Dispose(), Times.Once);
     }
 
-    // Test command for unit tests
-    public class TestCommand : ITransactionalCommand
+    // Test commands for unit tests
+    public class TestCommand : IRequest<Unit>, ITransactionalCommand
     {
+    }
+
+    public class NonTransactionalCommand : IRequest<Unit>
+    {
+        // Does NOT implement ITransactionalCommand
     }
 }

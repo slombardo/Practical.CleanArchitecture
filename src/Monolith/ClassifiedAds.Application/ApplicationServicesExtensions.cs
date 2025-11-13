@@ -1,8 +1,10 @@
 ﻿using ClassifiedAds.Application;
+using ClassifiedAds.Application.Common.Behaviors;
 using ClassifiedAds.Application.Common.Testing;
 using ClassifiedAds.Application.Products.Services;
 using ClassifiedAds.Application.Users.Services;
 using ClassifiedAds.Domain.Entities;
+using MediatR;
 using System;
 using System.Linq;
 using System.Reflection;
@@ -13,6 +15,13 @@ public static class ApplicationServicesExtensions
 {
     public static IServiceCollection AddApplicationServices(this IServiceCollection services, Action<Type, Type, ServiceLifetime> configureInterceptor = null)
     {
+        // Register MediatR with transactional pipeline behavior
+        services.AddMediatR(cfg =>
+        {
+            cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly());
+            cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(TransactionalBehavior<,>));
+        });
+
         // Register failure injector (no-op in production)
         services.AddSingleton<IFailureInjector, NoOpFailureInjector>();
 

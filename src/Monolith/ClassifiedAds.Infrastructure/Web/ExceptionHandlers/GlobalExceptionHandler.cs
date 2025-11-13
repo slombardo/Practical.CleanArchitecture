@@ -75,7 +75,13 @@ public class GlobalExceptionHandler : IExceptionHandler
         }
         else
         {
-            _logger.LogError(exception, "[{Ticks}-{ThreadId}]", DateTime.UtcNow.Ticks, Environment.CurrentManagedThreadId);
+            var correlationId = Activity.Current?.Id ?? Guid.NewGuid().ToString();
+            _logger.LogError(
+                exception,
+                "[{Ticks}-{ThreadId}] CorrelationId: {CorrelationId}",
+                DateTime.UtcNow.Ticks,
+                Environment.CurrentManagedThreadId,
+                correlationId);
 
             if (_options.DetailLevel == GlobalExceptionDetailLevel.Throw)
             {
@@ -92,6 +98,7 @@ public class GlobalExceptionHandler : IExceptionHandler
             };
 
             problemDetails.Extensions.Add("message", _options.GetErrorMessage(exception));
+            problemDetails.Extensions.Add("correlationId", correlationId);
             problemDetails.Extensions.Add("traceId", Activity.Current.GetTraceId());
 
             response.ContentType = "application/problem+json";

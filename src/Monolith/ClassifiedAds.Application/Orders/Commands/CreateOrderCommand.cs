@@ -1,8 +1,8 @@
 using ClassifiedAds.Application.Common.Commands;
 using ClassifiedAds.Application.Common.Testing;
-using ClassifiedAds.Application.Decorators.Transactional;
 using ClassifiedAds.Domain.Entities;
 using ClassifiedAds.Domain.Repositories;
+using MediatR;
 using System;
 using System.Linq;
 using System.Threading;
@@ -12,10 +12,10 @@ namespace ClassifiedAds.Application.Orders.Commands;
 
 /// <summary>
 /// Command to create a new order.
-/// Implements ITransactionalCommand to ensure atomic writes and deterministic rollback.
+/// Implements ITransactionalCommand to ensure atomic writes and deterministic rollback via MediatR pipeline behavior.
 /// Uses unique business key (UserId + ExternalOrderRef) to prevent duplicates.
 /// </summary>
-public class CreateOrderCommand : ITransactionalCommand
+public class CreateOrderCommand : IRequest, ITransactionalCommand
 {
     public Guid UserId { get; set; }
     public string ExternalOrderRef { get; set; }
@@ -26,11 +26,10 @@ public class CreateOrderCommand : ITransactionalCommand
 
 /// <summary>
 /// Handler for CreateOrderCommand.
-/// Creates a new order with transactional guarantees.
+/// Creates a new order with transactional guarantees provided by TransactionalBehavior pipeline.
 /// Uses IFailureInjector for testing failure scenarios.
 /// </summary>
-[Transactional(IsolationLevel = System.Data.IsolationLevel.ReadCommitted)]
-internal class CreateOrderCommandHandler : ICommandHandler<CreateOrderCommand>
+internal class CreateOrderCommandHandler : IRequestHandler<CreateOrderCommand>
 {
     private readonly IRepository<Order, Guid> _orderRepository;
     private readonly IUnitOfWork _unitOfWork;
@@ -46,7 +45,7 @@ internal class CreateOrderCommandHandler : ICommandHandler<CreateOrderCommand>
         _failureInjector = failureInjector;
     }
 
-    public async Task HandleAsync(CreateOrderCommand command, CancellationToken cancellationToken = default)
+    public async Task Handle(CreateOrderCommand command, CancellationToken cancellationToken)
     {
         // Generate order number
         var orderNumber = GenerateOrderNumber();
