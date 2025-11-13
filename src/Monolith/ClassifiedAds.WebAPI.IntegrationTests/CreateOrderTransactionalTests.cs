@@ -1,7 +1,5 @@
 using ClassifiedAds.Application;
-using ClassifiedAds.Application.Common.Behaviors;
 using ClassifiedAds.Application.Orders.Commands;
-using ClassifiedAds.Application.Orders.Queries;
 using ClassifiedAds.CrossCuttingConcerns.DateTimes;
 using ClassifiedAds.Domain.Entities;
 using ClassifiedAds.Domain.Repositories;
@@ -9,15 +7,14 @@ using ClassifiedAds.Infrastructure.Web.ExceptionHandlers;
 using ClassifiedAds.Persistence;
 using ClassifiedAds.Persistence.Repositories;
 using MediatR;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
@@ -31,15 +28,18 @@ public class CreateOrderTransactionalTests : IDisposable
     private readonly AdsDbContext _dbContext;
     private readonly TestFailureInjector _failureInjector;
     private readonly IMediator _mediator;
+    private readonly SqliteConnection _connection;
 
     public CreateOrderTransactionalTests()
     {
         var services = new ServiceCollection();
 
-        // Configure in-memory database with transaction warnings suppressed
+        // Use SQLite in-memory database which enforces constraints unlike EF Core's InMemory provider
+        _connection = new SqliteConnection("DataSource=:memory:");
+        _connection.Open();
+
         services.AddDbContext<AdsDbContext>(options =>
-            options.UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
-                   .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning)));
+            options.UseSqlite(_connection));
 
         services.AddScoped<IUnitOfWork>(provider => provider.GetRequiredService<AdsDbContext>());
         services.AddScoped(typeof(IRepository<,>), typeof(Repository<,>));
@@ -60,6 +60,10 @@ public class CreateOrderTransactionalTests : IDisposable
         // Build provider
         _serviceProvider = services.BuildServiceProvider();
         _dbContext = _serviceProvider.GetRequiredService<AdsDbContext>();
+
+        // Create the database schema
+        _dbContext.Database.EnsureCreated();
+
         _mediator = _serviceProvider.GetRequiredService<IMediator>();
     }
 
@@ -67,6 +71,7 @@ public class CreateOrderTransactionalTests : IDisposable
     {
         _dbContext.Database.EnsureDeleted();
         _serviceProvider.Dispose();
+        _connection.Dispose();
     }
 
     [Fact]
@@ -105,7 +110,7 @@ public class CreateOrderTransactionalTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_DuplicateBusinessKey_When_CreatingOrder_Then_409_DuplicateDetected_And_SingleRowInDb()
+    public async Task Given_DuplicateBusinessKey_When_CreatingOrder_Then_DbUpdateException_And_SingleRowInDb()
     {
         // Arrange
         var userId = Guid.NewGuid();
@@ -129,14 +134,20 @@ public class CreateOrderTransactionalTests : IDisposable
         Assert.Single(ordersAfterFirst);
         var firstOrderId = ordersAfterFirst[0].Id;
 
-        // Second request with same business key - should fail with duplicate
-        // Note: In-memory database doesn't enforce unique constraints the same way SQL Server does
-        // In a real SQL Server test, this would throw DbUpdateException
-        // For this test, we'll simulate the unique constraint violation
-        var duplicateException = CreateDuplicateKeyException();
+        // Second request with same business key - should fail with unique constraint violation
+        var secondRequest = new CreateOrderRequest
+        {
+            UserId = userId,
+            ExternalOrderRef = externalOrderRef,
+            Description = "Second order - duplicate",
+            TotalAmount = 200.00m
+        };
+
+        // Act - send second request through MediatR
+        var exception = await Assert.ThrowsAsync<DbUpdateException>(() => _mediator.Send(secondRequest));
 
         // Assert - exception handler produces 409 DuplicateDetected
-        var problemDetails = SimulateExceptionHandlerForDbUpdateException(duplicateException);
+        var problemDetails = SimulateExceptionHandlerForDbUpdateException(exception);
         Assert.Equal((int)HttpStatusCode.Conflict, problemDetails.Status);
         Assert.Equal("DuplicateDetected", problemDetails.Extensions["code"]);
 
@@ -147,6 +158,7 @@ public class CreateOrderTransactionalTests : IDisposable
         Assert.Single(ordersAfterSecond);
         Assert.Equal(firstOrderId, ordersAfterSecond[0].Id);
         Assert.Equal("First order", ordersAfterSecond[0].Description);
+        Assert.Equal(100.00m, ordersAfterSecond[0].TotalAmount);
     }
 
     [Fact]
@@ -199,7 +211,7 @@ public class CreateOrderTransactionalTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_FailureAfterSave_When_CreatingOrder_Then_TransactionRolledBack()
+    public async Task Given_FailureAfterSave_When_CreatingOrder_Then_TransactionRolledBack_And_NoRowPersisted()
     {
         // Arrange
         var userId = Guid.NewGuid();
@@ -221,9 +233,11 @@ public class CreateOrderTransactionalTests : IDisposable
         // Assert - exception is thrown
         Assert.Same(injectedError, exception);
 
-        // Note: In-memory database doesn't support true transactions, so changes persist
-        // In a real SQL Server test, no rows would be persisted due to transaction rollback
-        // This is a known limitation of EF Core's in-memory provider
+        // Assert - no rows persisted (transaction rolled back)
+        var ordersInDb = await _dbContext.Set<Order>()
+            .Where(o => o.UserId == userId && o.ExternalOrderRef == externalOrderRef)
+            .ToListAsync();
+        Assert.Empty(ordersInDb);
     }
 
     private static ProblemDetails SimulateExceptionHandler(Exception exception)
@@ -273,11 +287,5 @@ public class CreateOrderTransactionalTests : IDisposable
         problemDetails.Extensions.Add("correlationId", Guid.NewGuid().ToString());
 
         return problemDetails;
-    }
-
-    private static DbUpdateException CreateDuplicateKeyException()
-    {
-        var innerException = new Exception("Cannot insert duplicate key row in object");
-        return new DbUpdateException("An error occurred while saving", innerException);
     }
 }
