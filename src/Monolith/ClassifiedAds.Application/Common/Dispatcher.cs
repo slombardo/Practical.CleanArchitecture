@@ -9,6 +9,10 @@ using System.Threading.Tasks;
 
 namespace ClassifiedAds.Application;
 
+/// <summary>
+/// Custom dispatcher for commands and queries.
+/// </summary>
+[Obsolete("This custom Dispatcher is being replaced by MediatR. New commands should use IRequest/IRequestHandler with MediatR. This will be removed in a future version.")]
 public class Dispatcher
 {
     private readonly IServiceProvider _provider;

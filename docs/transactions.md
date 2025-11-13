@@ -290,6 +290,80 @@ src/Monolith/ClassifiedAds.UnitTests/
 docs/transactions.md                                   (NEW)
 ```
 
+## Migration from Legacy Dispatcher
+
+### Obsolete Infrastructure
+
+The following components are marked as `[Obsolete]` and will be removed in a future version:
+
+- **`Dispatcher`**: Custom command/query dispatcher replaced by MediatR
+- **`ICommand`**: Legacy command marker interface → Use `IRequest` or `IRequest<TResponse>` from MediatR
+- **`ICommandHandler<TCommand>`**: Legacy handler interface → Use `IRequestHandler<TRequest, TResponse>` from MediatR
+- **`IQuery<TResult>`**: Legacy query marker interface → Use `IRequest<TResponse>` from MediatR
+- **`IQueryHandler<TQuery, TResult>`**: Legacy handler interface → Use `IRequestHandler<TRequest, TResponse>` from MediatR
+
+### Migration Path
+
+**Before (Legacy Dispatcher):**
+```csharp
+// Command
+public class CreateOrderCommand : ICommand
+{
+    public Guid UserId { get; set; }
+    public string ExternalOrderRef { get; set; }
+}
+
+// Handler
+public class CreateOrderCommandHandler : ICommandHandler<CreateOrderCommand>
+{
+    public async Task HandleAsync(CreateOrderCommand command, CancellationToken cancellationToken)
+    {
+        // Business logic
+    }
+}
+
+// Usage in controller
+await _dispatcher.DispatchAsync(command, cancellationToken);
+```
+
+**After (MediatR):**
+```csharp
+// Command - implements BOTH IRequest and ITransactionalCommand
+public class CreateOrderCommand : IRequest, ITransactionalCommand
+{
+    public Guid UserId { get; set; }
+    public string ExternalOrderRef { get; set; }
+}
+
+// Handler
+internal class CreateOrderCommandHandler : IRequestHandler<CreateOrderCommand>
+{
+    public async Task Handle(CreateOrderCommand command, CancellationToken cancellationToken)
+    {
+        // Business logic - automatic transaction management via MediatR pipeline
+    }
+}
+
+// Usage in controller
+await _mediator.Send(command, cancellationToken);
+```
+
+### Benefits of MediatR
+
+1. **Industry standard**: De facto standard for CQRS in .NET
+2. **Pipeline behaviors**: Built-in support for cross-cutting concerns (transactions, logging, validation)
+3. **Single source of truth**: All commands flow through one pipeline
+4. **Better testing**: Easy to mock and test behaviors in isolation
+5. **Community support**: Large ecosystem of plugins and extensions
+
+### Existing Code
+
+Legacy `Dispatcher` and associated interfaces remain functional for backward compatibility. However:
+
+- **New features should use MediatR** (`IRequest`/`IRequestHandler`)
+- **Obsolete warnings will appear** when using legacy interfaces
+- **Plan migration of existing handlers** to MediatR over time
+
 ## References
 
 - [MediatR](https://github.com/jbogard/MediatR) - Simple mediator implementation in .NET
