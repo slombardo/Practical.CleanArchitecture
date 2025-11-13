@@ -53,6 +53,7 @@ services.Configure<AppSettings>(configuration);
 
 services.AddMonitoringServices(appSettings.Monitoring);
 
+services.AddExceptionHandler<TransactionalExceptionHandler>();
 services.AddExceptionHandler<GlobalExceptionHandler>();
 
 services.AddControllers(configure =>
@@ -318,3 +319,5 @@ app.MapThreadPoolInforEndpoint();
 app.MapGcInforEndpoint();
 
 app.Run();
+// Expose Program class for WebApplicationFactory in integration tests
+public partial class Program { }
