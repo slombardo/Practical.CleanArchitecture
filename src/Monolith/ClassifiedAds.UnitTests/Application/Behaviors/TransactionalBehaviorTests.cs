@@ -51,7 +51,7 @@ public class TransactionalBehaviorTests : IDisposable
     public async Task Given_TransactionalCommandSucceeds_When_Handled_Then_Commits_And_EmitsSuccessSpan()
     {
         // Arrange
-        _capturedActivities.Clear();
+        var startIndex = _capturedActivities.Count;
         var request = new TestTransactionalRequest { Data = "test" };
         var expectedResponse = new TestResponse { Result = "success" };
         RequestHandlerDelegate<TestResponse> next = () => Task.FromResult(expectedResponse);
@@ -78,7 +78,7 @@ public class TransactionalBehaviorTests : IDisposable
             Times.Once);
 
         // Assert - OpenTelemetry span emitted with correct attributes
-        var activity = _capturedActivities.LastOrDefault(a => a.OperationName == "command.transaction");
+        var activity = _capturedActivities.Skip(startIndex).FirstOrDefault(a => a.OperationName == "command.transaction");
         Assert.NotNull(activity);
         Assert.Equal("TestTransactionalRequest", activity.GetTagItem("command"));
         Assert.Equal(true, activity.GetTagItem("success"));
@@ -90,7 +90,7 @@ public class TransactionalBehaviorTests : IDisposable
     public async Task Given_TransactionalCommandThrows_When_Handled_Then_RollsBack_And_EmitsRolledBackSpan()
     {
         // Arrange
-        _capturedActivities.Clear();
+        var startIndex = _capturedActivities.Count;
         var request = new TestTransactionalRequest { Data = "test" };
         var expectedException = new InvalidOperationException("Test exception");
         RequestHandlerDelegate<TestResponse> next = () => throw expectedException;
@@ -118,7 +118,7 @@ public class TransactionalBehaviorTests : IDisposable
             Times.Once);
 
         // Assert - OpenTelemetry span emitted with rolled back attributes
-        var activity = _capturedActivities.LastOrDefault(a => a.OperationName == "command.transaction");
+        var activity = _capturedActivities.Skip(startIndex).FirstOrDefault(a => a.OperationName == "command.transaction");
         Assert.NotNull(activity);
         Assert.Equal("TestTransactionalRequest", activity.GetTagItem("command"));
         Assert.Equal(false, activity.GetTagItem("success"));
@@ -195,7 +195,7 @@ public class TransactionalBehaviorTests : IDisposable
     public async Task Given_DbUpdateConcurrencyException_When_Handled_Then_EmitsSpanWithConcurrencyConflictErrorCode()
     {
         // Arrange
-        _capturedActivities.Clear();
+        var startIndex = _capturedActivities.Count;
         var request = new TestTransactionalRequest { Data = "test" };
         var expectedException = new Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException("Concurrency conflict");
         RequestHandlerDelegate<TestResponse> next = () => throw expectedException;
@@ -209,7 +209,7 @@ public class TransactionalBehaviorTests : IDisposable
             () => behavior.Handle(request, next, CancellationToken.None));
 
         // Assert - span has error code matching HTTP response code
-        var activity = _capturedActivities.LastOrDefault(a => a.OperationName == "command.transaction");
+        var activity = _capturedActivities.Skip(startIndex).FirstOrDefault(a => a.OperationName == "command.transaction");
         Assert.NotNull(activity);
         Assert.Equal(false, activity.GetTagItem("success"));
         Assert.Equal(true, activity.GetTagItem("rolled_back"));
@@ -243,6 +243,37 @@ public class TransactionalBehaviorTests : IDisposable
         Assert.Equal(false, activity.GetTagItem("success"));
         Assert.Equal(true, activity.GetTagItem("rolled_back"));
         Assert.Equal("DuplicateDetected", activity.GetTagItem("error_code"));
+    }
+
+    [Fact]
+    public async Task Given_TransactionalCommandFails_When_Handled_Then_LogsErrorWithCorrelationIdAndCommandName()
+    {
+        // Arrange
+        var request = new TestTransactionalRequest { Data = "test" };
+        var expectedException = new InvalidOperationException("Database connection failed");
+        RequestHandlerDelegate<TestResponse> next = () => throw expectedException;
+
+        var mockLogger = new Mock<ILogger<TransactionalBehavior<TestTransactionalRequest, TestResponse>>>();
+
+        var behavior = new TransactionalBehavior<TestTransactionalRequest, TestResponse>(
+            _mockUnitOfWork.Object,
+            mockLogger.Object);
+
+        // Act
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => behavior.Handle(request, next, CancellationToken.None));
+
+        // Assert - error logged with command name, correlationId, and error code
+        mockLogger.Verify(
+            x => x.Log(
+                LogLevel.Error,
+                It.IsAny<EventId>(),
+                It.Is<It.IsAnyType>((state, type) =>
+                    state.ToString().Contains("TestTransactionalRequest") &&
+                    state.ToString().Contains("InvalidOperationException")),
+                expectedException,
+                It.IsAny<Func<It.IsAnyType, Exception, string>>()),
+            Times.Once);
     }
 
     public class TestRequest : IRequest<TestResponse>

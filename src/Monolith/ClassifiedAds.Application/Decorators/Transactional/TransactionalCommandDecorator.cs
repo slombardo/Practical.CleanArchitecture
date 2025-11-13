@@ -12,7 +12,7 @@ namespace ClassifiedAds.Application.Decorators.Transactional;
 public class TransactionalCommandDecorator<TCommand> : ICommandHandler<TCommand>
     where TCommand : ICommand
 {
-    private static readonly ActivitySource ActivitySource = new("ClassifiedAds.Application.Transactional");
+    private static readonly ActivitySource ActivitySource = new("ClassifiedAds.Application.Decorator.Transactional");
 
     private readonly ICommandHandler<TCommand> _handler;
     private readonly IUnitOfWork _unitOfWork;
