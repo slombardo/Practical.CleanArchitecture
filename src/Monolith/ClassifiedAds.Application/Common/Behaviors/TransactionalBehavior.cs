@@ -74,7 +74,7 @@ public class TransactionalBehavior<TRequest, TResponse> : IPipelineBehavior<TReq
         }
         catch (Exception ex)
         {
-            var errorCode = ex.GetType().Name;
+            var errorCode = MapExceptionToErrorCode(ex);
 
             activity?.SetTag("success", false);
             activity?.SetTag("rolled_back", true);
@@ -89,5 +89,71 @@ public class TransactionalBehavior<TRequest, TResponse> : IPipelineBehavior<TReq
 
             throw;
         }
+    }
+
+    private static string MapExceptionToErrorCode(Exception exception)
+    {
+        var exceptionTypeName = exception.GetType().FullName;
+
+        // DbUpdateConcurrencyException -> ConcurrencyConflict
+        if (exceptionTypeName?.Contains("DbUpdateConcurrencyException") == true)
+        {
+            return "ConcurrencyConflict";
+        }
+
+        // DbUpdateException with unique constraint violation -> DuplicateDetected
+        if (exceptionTypeName?.Contains("DbUpdateException") == true && IsUniqueConstraintViolation(exception))
+        {
+            return "DuplicateDetected";
+        }
+
+        // Default to exception type name for unknown exceptions
+        return exception.GetType().Name;
+    }
+
+    private static bool IsUniqueConstraintViolation(Exception exception)
+    {
+        // Check if it's a DbUpdateException (without direct type reference to avoid EF Core dependency)
+        var exceptionTypeName = exception.GetType().FullName;
+        if (exceptionTypeName?.Contains("DbUpdateException") != true)
+        {
+            return false;
+        }
+
+        var innerException = exception.InnerException;
+        if (innerException == null)
+        {
+            return false;
+        }
+
+        var message = innerException.Message;
+        var typeName = innerException.GetType().FullName;
+
+        // SQL Server: SqlException with error numbers 2601 (unique index) or 2627 (unique constraint)
+        if (typeName?.Contains("SqlException") == true)
+        {
+            return message.Contains("Cannot insert duplicate key") ||
+                   message.Contains("Violation of UNIQUE KEY constraint") ||
+                   message.Contains("duplicate key");
+        }
+
+        // PostgreSQL: PostgresException with SqlState 23505
+        if (typeName?.Contains("PostgresException") == true)
+        {
+            return message.Contains("duplicate key value violates unique constraint") ||
+                   message.Contains("23505");
+        }
+
+        // MySQL: MySqlException with error number 1062
+        if (typeName?.Contains("MySqlException") == true)
+        {
+            return message.Contains("Duplicate entry") ||
+                   message.Contains("for key");
+        }
+
+        // Generic fallback: check for common unique constraint violation patterns
+        return message.Contains("unique constraint", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase);
     }
 }
