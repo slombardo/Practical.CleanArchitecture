@@ -100,6 +100,7 @@ services.AddMultiTenantPersistence(typeof(AdsDbContextMultiTenantConnectionStrin
             services.AddInterceptors(serviceType, implementationType, serviceLifetime, appSettings.Interceptors);
         })
         .AddMessageHandlers()
+        .AddMediatRWithTransactionalBehavior()
         .ConfigureInterceptors()
         .AddIdentityCore();
 

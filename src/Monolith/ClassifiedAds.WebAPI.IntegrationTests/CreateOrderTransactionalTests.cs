@@ -1,5 +1,5 @@
 using ClassifiedAds.Application;
-using ClassifiedAds.Application.Decorators.Transactional;
+using ClassifiedAds.Application.Common.Behaviors;
 using ClassifiedAds.Application.Orders.Commands;
 using ClassifiedAds.Application.Orders.Queries;
 using ClassifiedAds.CrossCuttingConcerns.DateTimes;
@@ -8,6 +8,7 @@ using ClassifiedAds.Domain.Repositories;
 using ClassifiedAds.Infrastructure.Web.ExceptionHandlers;
 using ClassifiedAds.Persistence;
 using ClassifiedAds.Persistence.Repositories;
+using MediatR;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -29,6 +30,7 @@ public class CreateOrderTransactionalTests : IDisposable
     private readonly ServiceProvider _serviceProvider;
     private readonly AdsDbContext _dbContext;
     private readonly TestFailureInjector _failureInjector;
+    private readonly IMediator _mediator;
 
     public CreateOrderTransactionalTests()
     {
@@ -52,13 +54,13 @@ public class CreateOrderTransactionalTests : IDisposable
         // Register logging
         services.AddLogging(builder => builder.AddProvider(NullLoggerProvider.Instance));
 
-        // Register handlers
-        services.AddScoped<ICommandHandler<CreateOrderCommand>, CreateOrderCommandHandler>();
-        services.AddScoped<IQueryHandler<GetOrdersByBusinessKeyQuery, List<Order>>, GetOrdersByBusinessKeyQueryHandler>();
+        // Register MediatR with transactional behavior
+        services.AddMediatRWithTransactionalBehavior();
 
         // Build provider
         _serviceProvider = services.BuildServiceProvider();
         _dbContext = _serviceProvider.GetRequiredService<AdsDbContext>();
+        _mediator = _serviceProvider.GetRequiredService<IMediator>();
     }
 
     public void Dispose()
@@ -76,7 +78,7 @@ public class CreateOrderTransactionalTests : IDisposable
         var injectedError = new InvalidOperationException("Simulated failure before save");
         _failureInjector.ConfigureFailure("BeforeSave", injectedError);
 
-        var command = new CreateOrderCommand
+        var request = new CreateOrderRequest
         {
             UserId = userId,
             ExternalOrderRef = externalOrderRef,
@@ -84,16 +86,8 @@ public class CreateOrderTransactionalTests : IDisposable
             TotalAmount = 100.00m
         };
 
-        var decorator = CreateTransactionalDecorator<CreateOrderCommand>();
-        var handler = _serviceProvider.GetRequiredService<ICommandHandler<CreateOrderCommand>>();
-
-        var wrappedHandler = new TransactionalCommandDecorator<CreateOrderCommand>(
-            handler,
-            _serviceProvider.GetRequiredService<IUnitOfWork>(),
-            _serviceProvider.GetRequiredService<ILogger<TransactionalCommandDecorator<CreateOrderCommand>>>());
-
         // Act
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => wrappedHandler.HandleAsync(command));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => _mediator.Send(request));
 
         // Assert - exception is thrown
         Assert.Same(injectedError, exception);
@@ -118,7 +112,7 @@ public class CreateOrderTransactionalTests : IDisposable
         var externalOrderRef = "ORD-DUPLICATE";
 
         // First request - should succeed
-        var firstCommand = new CreateOrderCommand
+        var firstRequest = new CreateOrderRequest
         {
             UserId = userId,
             ExternalOrderRef = externalOrderRef,
@@ -126,13 +120,7 @@ public class CreateOrderTransactionalTests : IDisposable
             TotalAmount = 100.00m
         };
 
-        var handler = _serviceProvider.GetRequiredService<ICommandHandler<CreateOrderCommand>>();
-        var wrappedHandler = new TransactionalCommandDecorator<CreateOrderCommand>(
-            handler,
-            _serviceProvider.GetRequiredService<IUnitOfWork>(),
-            _serviceProvider.GetRequiredService<ILogger<TransactionalCommandDecorator<CreateOrderCommand>>>());
-
-        await wrappedHandler.HandleAsync(firstCommand);
+        await _mediator.Send(firstRequest);
 
         // Verify first order was created
         var ordersAfterFirst = await _dbContext.Set<Order>()
@@ -142,24 +130,9 @@ public class CreateOrderTransactionalTests : IDisposable
         var firstOrderId = ordersAfterFirst[0].Id;
 
         // Second request with same business key - should fail with duplicate
-        var secondCommand = new CreateOrderCommand
-        {
-            UserId = userId,
-            ExternalOrderRef = externalOrderRef,
-            Description = "Duplicate order",
-            TotalAmount = 200.00m
-        };
-
         // Note: In-memory database doesn't enforce unique constraints the same way SQL Server does
         // In a real SQL Server test, this would throw DbUpdateException
         // For this test, we'll simulate the unique constraint violation
-        var secondHandler = _serviceProvider.GetRequiredService<ICommandHandler<CreateOrderCommand>>();
-        var secondWrappedHandler = new TransactionalCommandDecorator<CreateOrderCommand>(
-            secondHandler,
-            _serviceProvider.GetRequiredService<IUnitOfWork>(),
-            _serviceProvider.GetRequiredService<ILogger<TransactionalCommandDecorator<CreateOrderCommand>>>());
-
-        // Act - simulate duplicate key exception (as in-memory DB doesn't enforce uniqueness)
         var duplicateException = CreateDuplicateKeyException();
 
         // Assert - exception handler produces 409 DuplicateDetected
@@ -198,7 +171,7 @@ public class CreateOrderTransactionalTests : IDisposable
         var userId = Guid.NewGuid();
         var externalOrderRef = "ORD-SUCCESS";
 
-        var command = new CreateOrderCommand
+        var request = new CreateOrderRequest
         {
             UserId = userId,
             ExternalOrderRef = externalOrderRef,
@@ -206,14 +179,8 @@ public class CreateOrderTransactionalTests : IDisposable
             TotalAmount = 150.00m
         };
 
-        var handler = _serviceProvider.GetRequiredService<ICommandHandler<CreateOrderCommand>>();
-        var wrappedHandler = new TransactionalCommandDecorator<CreateOrderCommand>(
-            handler,
-            _serviceProvider.GetRequiredService<IUnitOfWork>(),
-            _serviceProvider.GetRequiredService<ILogger<TransactionalCommandDecorator<CreateOrderCommand>>>());
-
         // Act
-        await wrappedHandler.HandleAsync(command);
+        var response = await _mediator.Send(request);
 
         // Assert - order persisted correctly
         var orders = await _dbContext.Set<Order>()
@@ -228,7 +195,7 @@ public class CreateOrderTransactionalTests : IDisposable
         Assert.Equal(150.00m, order.TotalAmount);
         Assert.Equal("Pending", order.Status);
         Assert.NotEqual(Guid.Empty, order.Id);
-        Assert.Equal(command.CreatedOrderId, order.Id);
+        Assert.Equal(response.OrderId, order.Id);
     }
 
     [Fact]
@@ -240,7 +207,7 @@ public class CreateOrderTransactionalTests : IDisposable
         var injectedError = new InvalidOperationException("Simulated failure after save");
         _failureInjector.ConfigureFailure("AfterSave", injectedError);
 
-        var command = new CreateOrderCommand
+        var request = new CreateOrderRequest
         {
             UserId = userId,
             ExternalOrderRef = externalOrderRef,
@@ -248,14 +215,8 @@ public class CreateOrderTransactionalTests : IDisposable
             TotalAmount = 300.00m
         };
 
-        var handler = _serviceProvider.GetRequiredService<ICommandHandler<CreateOrderCommand>>();
-        var wrappedHandler = new TransactionalCommandDecorator<CreateOrderCommand>(
-            handler,
-            _serviceProvider.GetRequiredService<IUnitOfWork>(),
-            _serviceProvider.GetRequiredService<ILogger<TransactionalCommandDecorator<CreateOrderCommand>>>());
-
         // Act
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => wrappedHandler.HandleAsync(command));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => _mediator.Send(request));
 
         // Assert - exception is thrown
         Assert.Same(injectedError, exception);
@@ -263,15 +224,6 @@ public class CreateOrderTransactionalTests : IDisposable
         // Note: In-memory database doesn't support true transactions, so changes persist
         // In a real SQL Server test, no rows would be persisted due to transaction rollback
         // This is a known limitation of EF Core's in-memory provider
-    }
-
-    private TransactionalCommandDecorator<TCommand> CreateTransactionalDecorator<TCommand>()
-        where TCommand : ICommand
-    {
-        return new TransactionalCommandDecorator<TCommand>(
-            _serviceProvider.GetRequiredService<ICommandHandler<TCommand>>(),
-            _serviceProvider.GetRequiredService<IUnitOfWork>(),
-            _serviceProvider.GetRequiredService<ILogger<TransactionalCommandDecorator<TCommand>>>());
     }
 
     private static ProblemDetails SimulateExceptionHandler(Exception exception)

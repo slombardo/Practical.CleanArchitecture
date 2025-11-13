@@ -1,7 +1,9 @@
 ﻿using ClassifiedAds.Application;
+using ClassifiedAds.Application.Common.Behaviors;
 using ClassifiedAds.Application.Products.Services;
 using ClassifiedAds.Application.Users.Services;
 using ClassifiedAds.Domain.Entities;
+using MediatR;
 using System;
 using System.Linq;
 using System.Reflection;
@@ -94,5 +96,19 @@ public static class ApplicationServicesExtensions
     public static Dispatcher GetDispatcher(this IServiceProvider provider)
     {
         return provider.GetRequiredService<Dispatcher>();
+    }
+
+    /// <summary>
+    /// Adds MediatR with transactional pipeline behavior.
+    /// </summary>
+    public static IServiceCollection AddMediatRWithTransactionalBehavior(this IServiceCollection services)
+    {
+        services.AddMediatR(cfg =>
+        {
+            cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly());
+            cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(TransactionalBehavior<,>));
+        });
+
+        return services;
     }
 }

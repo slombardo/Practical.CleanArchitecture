@@ -1,8 +1,8 @@
-using ClassifiedAds.Application;
 using ClassifiedAds.Application.Orders.Commands;
 using ClassifiedAds.Application.Orders.Queries;
 using ClassifiedAds.Domain.Entities;
 using ClassifiedAds.WebAPI.Models.Orders;
+using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -18,12 +18,12 @@ namespace ClassifiedAds.WebAPI.Controllers;
 [ApiController]
 public class OrdersController : ControllerBase
 {
-    private readonly Dispatcher _dispatcher;
+    private readonly IMediator _mediator;
     private readonly ILogger<OrdersController> _logger;
 
-    public OrdersController(Dispatcher dispatcher, ILogger<OrdersController> logger)
+    public OrdersController(IMediator mediator, ILogger<OrdersController> logger)
     {
-        _dispatcher = dispatcher;
+        _mediator = mediator;
         _logger = logger;
     }
 
@@ -32,7 +32,7 @@ public class OrdersController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<OrderModel>> Get(Guid id)
     {
-        var order = await _dispatcher.DispatchAsync(new GetOrderQuery { Id = id, ThrowNotFoundIfNull = true });
+        var order = await _mediator.Send(new GetOrderRequest { Id = id, ThrowNotFoundIfNull = true });
         var model = ToModel(order);
         return Ok(model);
     }
@@ -48,7 +48,7 @@ public class OrdersController : ControllerBase
             model.UserId,
             model.ExternalOrderRef);
 
-        var command = new CreateOrderCommand
+        var request = new CreateOrderRequest
         {
             UserId = model.UserId,
             ExternalOrderRef = model.ExternalOrderRef,
@@ -56,10 +56,10 @@ public class OrdersController : ControllerBase
             TotalAmount = model.TotalAmount
         };
 
-        await _dispatcher.DispatchAsync(command);
+        var response = await _mediator.Send(request);
 
         // Fetch the created order to return full details
-        var order = await _dispatcher.DispatchAsync(new GetOrderQuery { Id = command.CreatedOrderId, ThrowNotFoundIfNull = true });
+        var order = await _mediator.Send(new GetOrderRequest { Id = response.OrderId, ThrowNotFoundIfNull = true });
         var resultModel = ToModel(order);
 
         return Created($"/api/orders/{resultModel.Id}", resultModel);
