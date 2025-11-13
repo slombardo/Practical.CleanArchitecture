@@ -1,6 +1,31 @@
 # Solution Structure
 ![alt text](/docs/imgs/code-solution-structure.png)
 
+---
+
+## ⚠️ ARCHITECTURE MIGRATION IN PROGRESS ⚠️
+
+**This codebase is migrating from the decorator pattern to MediatR.**
+
+### DO NOT create new handlers using:
+- `ICommand`, `IQuery`
+- `ICommandHandler<>`, `IQueryHandler<>`
+- Decorator attributes (`[Transactional]`, `[AuditLog]`, `[DatabaseRetry]`)
+
+### DO use the MediatR pattern:
+- `IRequest<TResponse>`
+- `IRequestHandler<TRequest, TResponse>`
+- Pipeline behaviors (`ITransactionalRequest`, etc.)
+
+**Documentation:**
+- [ADR-0001: Migrate to MediatR](docs/adr/0001-migrate-to-mediatr-from-decorator-pattern.md) - Why we're migrating
+- [Migration Strategy](docs/MediatRMigrationStrategy.md) - How to migrate
+- [Transactional Pipeline](docs/TransactionalPipeline.md) - How to use the new pattern
+
+**Questions?** See the [MediatR Migration Strategy](docs/MediatRMigrationStrategy.md) or ask in #architecture channel.
+
+---
+
 # Add & Run Database Migration
 
 - Update Connection Strings:
