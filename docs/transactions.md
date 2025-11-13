@@ -2,17 +2,17 @@
 
 ## Overview
 
-The Transactional Command Pipeline provides automatic database transaction management for write commands in the Practical.CleanArchitecture solution. It ensures atomic writes, deterministic rollback on failure, and precise HTTP error mapping (409 vs 500) without polluting handlers with transaction logic.
+The Transactional Command Pipeline provides automatic database transaction management for write commands in the Practical.CleanArchitecture solution using **MediatR's `IPipelineBehavior<TRequest,TResponse>`**. It ensures atomic writes, deterministic rollback on failure, and precise HTTP error mapping (409 vs 500) without polluting handlers with transaction logic.
 
 ## Architecture
 
 ### Components
 
-1. **TransactionalCommandDecorator**: Decorator that wraps command handlers with transaction boundaries
+1. **TransactionalBehavior**: MediatR pipeline behavior that wraps command handlers with transaction boundaries
 2. **ITransactionalCommand**: Marker interface for commands requiring transactional behavior
-3. **TransactionalAttribute**: Attribute-based approach for marking handlers (with configurable isolation level)
-4. **TransactionalExceptionHandler**: Maps database exceptions to HTTP status codes (409/500)
-5. **IFailureInjector**: Testing seam for simulating failures at specific points
+3. **TransactionalExceptionHandler**: Maps database exceptions to HTTP status codes (409/500)
+4. **IFailureInjector**: Testing seam for simulating failures at specific points
+5. **GlobalExceptionHandler**: Catches all unhandled exceptions and returns 500 with correlationId
 
 ### How It Works
 
@@ -21,23 +21,25 @@ The Transactional Command Pipeline provides automatic database transaction manag
 │                     API Controller                           │
 └────────────────────────┬─────────────────────────────────────┘
                          │
-                         │ Dispatcher.DispatchAsync(command)
+                         │ IMediator.Send(command)
                          ▼
 ┌──────────────────────────────────────────────────────────────┐
-│              TransactionalCommandDecorator                   │
+│              MediatR Pipeline (IPipelineBehavior)            │
 │  ┌────────────────────────────────────────────────────────┐  │
-│  │  1. Begin Transaction (IUnitOfWork)                    │  │
-│  │  2. Start OpenTelemetry Span "command.transaction"    │  │
-│  │  3. Call Inner Handler                                │  │
-│  │  4. Commit Transaction (on success)                   │  │
-│  │  5. Emit Telemetry (success/failure)                  │  │
-│  │  6. Rollback (on exception via Dispose)               │  │
+│  │           TransactionalBehavior<TRequest,TResponse>    │  │
+│  │  1. Check if command implements ITransactionalCommand │  │
+│  │  2. Begin Transaction (IUnitOfWork)                   │  │
+│  │  3. Start OpenTelemetry Span "command.transaction"   │  │
+│  │  4. Call next() → Inner Handler                      │  │
+│  │  5. Commit Transaction (on success)                  │  │
+│  │  6. Emit Telemetry (success/failure)                 │  │
+│  │  7. Rollback (on exception via Dispose)              │  │
 │  └────────────────────────────────────────────────────────┘  │
 └────────────────────────┬─────────────────────────────────────┘
                          │
                          ▼
 ┌──────────────────────────────────────────────────────────────┐
-│                  Command Handler                             │
+│        Command Handler (IRequestHandler<TRequest>)           │
 │  - Business logic (HTTP-agnostic)                            │
 │  - Calls repositories                                        │
 │  - SaveChanges (within transaction boundary)                 │
@@ -46,20 +48,30 @@ The Transactional Command Pipeline provides automatic database transaction manag
                          │ On Exception
                          ▼
 ┌──────────────────────────────────────────────────────────────┐
-│           TransactionalExceptionHandler                      │
+│           TransactionalExceptionHandler (FIRST)              │
 │  - DbUpdateConcurrencyException → 409 ConcurrencyConflict    │
 │  - DbUpdateException (unique) → 409 DuplicateDetected        │
-│  - All other exceptions → 500 with correlationId             │
+│  - Returns false for all others → falls through              │
+└────────────────────────┬─────────────────────────────────────┘
+                         │ (if not handled)
+                         ▼
+┌──────────────────────────────────────────────────────────────┐
+│           GlobalExceptionHandler (FALLBACK)                  │
+│  - All other exceptions → 500 with correlationId + logs      │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ## Usage
 
-### 1. Mark Command for Transactional Behavior
+### 1. Mark Command for Transactional Behavior (MediatR)
 
-**Option A: Interface-based (Recommended)**
+Commands must implement **both** `IRequest` (or `IRequest<TResponse>`) from MediatR **and** `ITransactionalCommand`:
+
 ```csharp
-public class CreateOrderCommand : ITransactionalCommand
+using MediatR;
+using ClassifiedAds.Application.Common.Commands;
+
+public class CreateOrderCommand : IRequest, ITransactionalCommand
 {
     public Guid UserId { get; set; }
     public string ExternalOrderRef { get; set; }
@@ -67,24 +79,22 @@ public class CreateOrderCommand : ITransactionalCommand
 }
 ```
 
-**Option B: Attribute-based**
-```csharp
-[Transactional(IsolationLevel = IsolationLevel.ReadCommitted)]
-internal class CreateOrderCommandHandler : ICommandHandler<CreateOrderCommand>
-{
-    // Handler implementation
-}
-```
+**Key Points:**
+- `IRequest` / `IRequest<TResponse>` - Required by MediatR
+- `ITransactionalCommand` - Marker interface detected by `TransactionalBehavior`
+- No attributes needed - MediatR handles everything via pipeline
 
 ### 2. Implement Handler (HTTP-agnostic)
 
 ```csharp
-internal class CreateOrderCommandHandler : ICommandHandler<CreateOrderCommand>
+using MediatR;
+
+internal class CreateOrderCommandHandler : IRequestHandler<CreateOrderCommand>
 {
     private readonly IRepository<Order, Guid> _orderRepository;
     private readonly IUnitOfWork _unitOfWork;
 
-    public async Task HandleAsync(CreateOrderCommand command, CancellationToken cancellationToken)
+    public async Task Handle(CreateOrderCommand command, CancellationToken cancellationToken)
     {
         var order = new Order
         {
@@ -96,7 +106,7 @@ internal class CreateOrderCommandHandler : ICommandHandler<CreateOrderCommand>
         await _orderRepository.AddOrUpdateAsync(order, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        // Transaction is automatically committed by decorator
+        // Transaction is automatically committed by MediatR pipeline behavior
         // Rollback happens automatically on any exception
     }
 }
@@ -225,15 +235,19 @@ public async Task Given_UnexpectedFailure_BeforeSave_When_CreatingOrder_Then_NoP
 
 ## Design Decisions
 
-### Why Decorator Pattern?
+### Why MediatR Pipeline Behavior?
+- **Industry standard**: MediatR is the de facto standard for CQRS in .NET
+- **Single source of truth**: One pipeline for all cross-cutting concerns
 - **Separation of concerns**: Transaction logic separate from business logic
 - **SOLID compliance**: Handlers remain focused on business rules
-- **Testability**: Easy to mock and test in isolation
+- **Testability**: Easy to mock and test behaviors in isolation
+- **Composition**: Behaviors can be stacked and ordered
 
 ### Why Exception-based Mapping?
-- **Centralized logic**: Single place to map exceptions to HTTP status codes
+- **Centralized logic**: Exception handlers map exceptions to HTTP status codes
 - **Consistency**: All commands use the same error mapping rules
-- **Observability**: Exceptions are logged with correlation IDs
+- **Chain of responsibility**: TransactionalExceptionHandler → GlobalExceptionHandler
+- **Observability**: Exceptions are logged with correlationId for tracing
 
 ### Why Failure Injector?
 - **Deterministic testing**: Simulate failures without complex test infrastructure
@@ -245,15 +259,14 @@ public async Task Given_UnexpectedFailure_BeforeSave_When_CreatingOrder_Then_NoP
 ```
 src/Monolith/ClassifiedAds.Application/
 ├── Common/
+│   ├── Behaviors/TransactionalBehavior.cs             (NEW - MediatR IPipelineBehavior)
 │   ├── Commands/ITransactionalCommand.cs              (NEW)
 │   └── Testing/
 │       ├── IFailureInjector.cs                        (NEW)
 │       └── NoOpFailureInjector.cs                     (NEW)
-├── Decorators/Transactional/
-│   ├── TransactionalAttribute.cs                      (NEW)
-│   └── TransactionalCommandDecorator.cs               (NEW)
-├── Orders/Commands/CreateOrderCommand.cs              (NEW)
-└── ApplicationServicesExtensions.cs                   (MODIFIED)
+├── Orders/Commands/CreateOrderCommand.cs              (NEW - implements IRequest + ITransactionalCommand)
+├── ApplicationServicesExtensions.cs                   (MODIFIED - registered MediatR)
+└── ClassifiedAds.Application.csproj                   (MODIFIED - added MediatR package)
 
 src/Monolith/ClassifiedAds.Domain/
 └── Entities/Order.cs                                  (NEW)
@@ -262,22 +275,25 @@ src/Monolith/ClassifiedAds.Persistence/
 └── DbConfigurations/OrderConfiguration.cs             (NEW)
 
 src/Monolith/ClassifiedAds.Infrastructure/
-└── Web/ExceptionHandlers/TransactionalExceptionHandler.cs (NEW)
+├── Web/ExceptionHandlers/
+│   ├── TransactionalExceptionHandler.cs               (NEW - handles 409 cases)
+│   └── GlobalExceptionHandler.cs                      (MODIFIED - added correlationId for 500)
 
 src/Monolith/ClassifiedAds.WebAPI/
-└── Program.cs                                         (MODIFIED)
+└── Program.cs                                         (MODIFIED - registered TransactionalExceptionHandler)
 
 src/Monolith/ClassifiedAds.UnitTests/
 ├── Application/
-│   ├── Decorators/TransactionalCommandDecoratorTests.cs   (NEW)
-│   ├── Orders/CreateOrderCommandTransactionalTests.cs     (NEW)
-│   └── Testing/ConfigurableFailureInjector.cs             (NEW)
+│   ├── Behaviors/TransactionalBehaviorTests.cs        (NEW - MediatR behavior tests)
+│   └── Testing/ConfigurableFailureInjector.cs         (NEW)
 
 docs/transactions.md                                   (NEW)
 ```
 
 ## References
 
+- [MediatR](https://github.com/jbogard/MediatR) - Simple mediator implementation in .NET
+- [MediatR Pipeline Behaviors](https://github.com/jbogard/MediatR/wiki/Behaviors) - Cross-cutting concerns
 - [EF Core Transactions](https://learn.microsoft.com/en-us/ef/core/saving/transactions)
 - [ASP.NET Core ProblemDetails](https://learn.microsoft.com/en-us/aspnet/core/web-api/handle-errors)
 - [OpenTelemetry .NET](https://opentelemetry.io/docs/instrumentation/net/)
